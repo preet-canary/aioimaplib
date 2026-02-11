@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aioimaplib"
+version = "0.1.0"
+description = "Asyncio IMAP4 client based on Python stdlib imaplib"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "aioimaplib contributors" }]
+license = { text = "PSF-2.0" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: Python Software Foundation License",
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "coverage[toml]>=7.5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "asyncio: mark test as asyncio-driven",
+]
+
+[tool.coverage.run]
+source = ["aioimaplib"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
