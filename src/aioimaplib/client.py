@@ -32,6 +32,7 @@ __all__ = [
 
 
 CRLF = b"\r\n"
+_UNSET = object()  # Sentinel to distinguish "no argument" from None
 Debug = 0
 IMAP4_PORT = 143
 IMAP4_SSL_PORT = 993
@@ -139,7 +140,8 @@ class AsyncIdler:
     def __init__(self, imap: "IMAP4", duration: float | None = None):
         if "IDLE" not in imap.capabilities:
             raise imap.error("Server does not support IMAP4 IDLE")
-        if duration is not None and imap.socket() is None and not imap._is_stream:
+        if duration is not None and imap.socket() is None:
+            # IMAP4_stream pipes don't support timeouts
             raise imap.error("duration requires a socket connection")
         self._imap = imap
         self._duration = duration
@@ -397,7 +399,7 @@ class IMAP4:
                 size -= len(self._readbuf)
                 self._readbuf.clear()
 
-            chunk = await self._source_read(DEFAULT_BUFFER_SIZE)
+            chunk = await self._source_read(DEFAULT_BUFFER_SIZE, timeout=self.timeout)
             if not chunk:
                 break
             if len(chunk) >= size:
@@ -409,7 +411,12 @@ class IMAP4:
 
         return b"".join(parts)
 
-    async def readline(self, timeout: float | None = None):
+    async def readline(self, timeout: float | None = _UNSET):
+        # When no explicit timeout is given, fall back to the instance
+        # timeout (matching upstream where socket.settimeout persists).
+        if timeout is _UNSET:
+            timeout = self.timeout
+
         LF = b"\n"
 
         while True:
@@ -437,13 +444,16 @@ class IMAP4:
     async def send(self, data):
         if self._writer is not None:
             self._writer.write(data)
-            await self._writer.drain()
-            return
-        if self._proc_writer is not None:
+            coro = self._writer.drain()
+        elif self._proc_writer is not None:
             self._proc_writer.write(data)
-            await self._proc_writer.drain()
-            return
-        raise self.abort("socket error: not connected")
+            coro = self._proc_writer.drain()
+        else:
+            raise self.abort("socket error: not connected")
+        if self.timeout is not None:
+            await asyncio.wait_for(coro, self.timeout)
+        else:
+            await coro
 
     async def shutdown(self):
         if self._reader is not None or self._writer is not None:
@@ -504,13 +514,13 @@ class IMAP4:
             date_time = Time2Internaldate(date_time)
         else:
             date_time = None
-        self.literal = MapCRLF.sub(CRLF, message)
-        return await self._simple_command(name, mailbox, flags, date_time)
+        literal = MapCRLF.sub(CRLF, message)
+        return await self._simple_command(name, mailbox, flags, date_time, _literal=literal)
 
     async def authenticate(self, mechanism, authobject):
         mech = mechanism.upper()
-        self.literal = _Authenticator(authobject).process
-        typ, dat = await self._simple_command("AUTHENTICATE", mech)
+        literal = _Authenticator(authobject).process
+        typ, dat = await self._simple_command("AUTHENTICATE", mech, _literal=literal)
         if typ != "OK":
             raise self.error(dat[-1].decode("utf-8", "replace"))
         self.state = "AUTH"
@@ -945,7 +955,7 @@ class IMAP4:
             self._check_bye()
             await self._get_response()
 
-    async def _get_line(self, timeout: float | None = None):
+    async def _get_line(self, timeout=_UNSET):
         line = await self.readline(timeout=timeout)
         if not line:
             raise self.abort("socket error: EOF")
@@ -968,15 +978,14 @@ class IMAP4:
         arg = arg.replace('"', '\\"')
         return f'"{arg}"'
 
-    async def _simple_command(self, name, *args):
-        # Save and restore self.literal around connect(), because connect()
-        # internally calls _simple_command("CAPABILITY") which would consume
-        # the literal intended for this command (e.g. AUTHENTICATE).
-        saved_literal = self.literal
-        self.literal = None
+    async def _simple_command(self, name, *args, _literal=None):
+        # Literal is passed as a keyword arg rather than through shared
+        # self.literal state.  This prevents concurrent commands from
+        # corrupting each other's payloads, and avoids the earlier bug
+        # where connect()'s inner CAPABILITY command consumed the literal.
         await self.connect()
-        self.literal = saved_literal
         async with self._command_lock:
+            self.literal = _literal
             return await self._command_complete(name, await self._command(name, *args))
 
     def _untagged_response(self, typ, dat, name):

@@ -104,6 +104,8 @@ async def test_fastmail_attempt_all_commands_live():
     ssl_context = ssl.create_default_context()
 
     attempted = set()
+    succeeded = set()
+    failed: dict[str, str] = {}
 
     client = IMAP4_SSL(host, port, ssl_context=ssl_context, timeout=30)
     box_a = _mailbox_name("BOX_A")
@@ -111,31 +113,42 @@ async def test_fastmail_attempt_all_commands_live():
     box_renamed = box_a + "_RENAMED"
     seq = "1"
 
-    async def _attempt(name: str, coro):
+    async def _attempt(name: str, coro, *, must_succeed: bool = False,
+                       ok_types: set[str] = frozenset({"OK"})):
         attempted.add(name)
         try:
             result = await coro
             if isinstance(result, tuple):
                 typ = result[0]
-                assert typ in {"OK", "NO", "BYE"}
+                assert typ in {"OK", "NO", "BYE", "BAD"}, f"{name}: unexpected type {typ!r}"
+                if typ in ok_types:
+                    succeeded.add(name)
+                    return True
+                # Server handled the command but denied/rejected it
+                if must_succeed:
+                    failed[name] = f"expected {ok_types}, got {typ}"
+                return False
+            succeeded.add(name)
             return True
-        except (IMAP4.error, IMAP4.abort, OSError):
+        except (IMAP4.error, IMAP4.abort, OSError) as exc:
+            if must_succeed:
+                failed[name] = str(exc)
             return False
 
     try:
-        await _attempt("CAPABILITY", client.capability())
-        await _attempt("LOGIN", client.login(user, password))
-        await _attempt("CAPABILITY", client.capability())
+        await _attempt("CAPABILITY", client.capability(), must_succeed=True)
+        await _attempt("LOGIN", client.login(user, password), must_succeed=True)
+        await _attempt("CAPABILITY", client.capability(), must_succeed=True)
 
-        await _attempt("CREATE", client.create(box_a))
-        await _attempt("CREATE", client.create(box_b))
-        await _attempt("LIST", client.list())
-        await _attempt("LSUB", client.lsub())
-        await _attempt("NAMESPACE", client.namespace())
-        await _attempt("STATUS", client.status("INBOX", "(MESSAGES UIDNEXT UIDVALIDITY)"))
-        await _attempt("MYRIGHTS", client.myrights("INBOX"))
-        await _attempt("SUBSCRIBE", client.subscribe(box_a))
-        await _attempt("UNSUBSCRIBE", client.unsubscribe(box_a))
+        await _attempt("CREATE", client.create(box_a), must_succeed=True)
+        await _attempt("CREATE", client.create(box_b), must_succeed=True)
+        await _attempt("LIST", client.list(), must_succeed=True)
+        await _attempt("LSUB", client.lsub(), must_succeed=True)
+        await _attempt("NAMESPACE", client.namespace(), must_succeed=True)
+        await _attempt("STATUS", client.status("INBOX", "(MESSAGES UIDNEXT UIDVALIDITY)"), must_succeed=True)
+        await _attempt("MYRIGHTS", client.myrights("INBOX"), must_succeed=True)
+        await _attempt("SUBSCRIBE", client.subscribe(box_a), must_succeed=True)
+        await _attempt("UNSUBSCRIBE", client.unsubscribe(box_a), must_succeed=True)
         await _attempt("GETACL", client.getacl("INBOX"))
         await _attempt("DELETEACL", client.deleteacl("INBOX", user))
         await _attempt("SETACL", client.setacl("INBOX", user, "lr"))
@@ -147,23 +160,23 @@ async def test_fastmail_attempt_all_commands_live():
         await _attempt("PROXYAUTH", client.proxyauth(user))
         await _attempt("ENABLE", client.enable("UTF8=ACCEPT"))
 
-        await _attempt("SELECT", client.select(box_a))
-        await _attempt("APPEND", client.append(box_a, None, None, b"Subject: one\r\n\r\nbody"))
-        await _attempt("CHECK", client.check())
-        await _attempt("SEARCH", client.search(None, "ALL"))
+        await _attempt("SELECT", client.select(box_a), must_succeed=True)
+        await _attempt("APPEND", client.append(box_a, None, None, b"Subject: one\r\n\r\nbody"), must_succeed=True)
+        await _attempt("CHECK", client.check(), must_succeed=True)
+        await _attempt("SEARCH", client.search(None, "ALL"), must_succeed=True)
 
         typ, data = await client.search(None, "ALL")
         if typ == "OK" and data and data[0]:
             seq = data[0].split()[-1].decode()
 
-        await _attempt("FETCH", client.fetch(seq, "(UID FLAGS RFC822.SIZE)"))
-        await _attempt("STORE", client.store(seq, "+FLAGS", "\\Seen"))
-        await _attempt("COPY", client.copy(seq, box_b))
+        await _attempt("FETCH", client.fetch(seq, "(UID FLAGS RFC822.SIZE)"), must_succeed=True)
+        await _attempt("STORE", client.store(seq, "+FLAGS", "\\Seen"), must_succeed=True)
+        await _attempt("COPY", client.copy(seq, box_b), must_succeed=True)
         await _attempt("PARTIAL", client.partial(seq, "BODY[TEXT]", "0", "16"))
         await _attempt("SORT", client.sort("DATE", "UTF-8", "ALL"))
         await _attempt("THREAD", client.thread("REFERENCES", "UTF-8", "ALL"))
-        await _attempt("UID", client.uid("FETCH", seq, "(UID FLAGS)"))
-        await _attempt("UID", client.uid("SEARCH", None, "ALL"))
+        await _attempt("UID", client.uid("FETCH", seq, "(UID FLAGS)"), must_succeed=True)
+        await _attempt("UID", client.uid("SEARCH", None, "ALL"), must_succeed=True)
         await _attempt("UID", client.uid("SORT", "(DATE)", "UTF-8", "ALL"))
         await _attempt("UID", client.uid("THREAD", "REFERENCES", "UTF-8", "ALL"))
         await _attempt("MOVE", client.xatom("MOVE", seq, box_b))
@@ -176,23 +189,26 @@ async def test_fastmail_attempt_all_commands_live():
                     await anext(idler)
                 except StopAsyncIteration:
                     pass
+            succeeded.add("IDLE")
         except (IMAP4.error, IMAP4.abort, OSError):
             pass
 
-        await _attempt("NOOP", client.noop())
-        await _attempt("EXPUNGE", client.expunge())
-        await _attempt("UNSELECT", client.unselect())
+        await _attempt("NOOP", client.noop(), must_succeed=True)
+        await _attempt("EXPUNGE", client.expunge(), must_succeed=True)
+        await _attempt("UNSELECT", client.unselect(), must_succeed=True)
 
-        await _attempt("EXAMINE", client._simple_command("EXAMINE", box_a))
-        await _attempt("CLOSE", client.close())
+        # Use select(readonly=True) so is_readonly is set properly,
+        # preventing the READ-ONLY untagged response from raising readonly.
+        await _attempt("EXAMINE", client.select(box_a, readonly=True), must_succeed=True)
+        await _attempt("CLOSE", client.close(), must_succeed=True)
 
-        await _attempt("RENAME", client.rename(box_a, box_renamed))
-        await _attempt("RENAME", client.rename(box_renamed, box_a))
+        await _attempt("RENAME", client.rename(box_a, box_renamed), must_succeed=True)
+        await _attempt("RENAME", client.rename(box_renamed, box_a), must_succeed=True)
 
-        await _attempt("DELETE", client.delete(box_b))
-        await _attempt("DELETE", client.delete(box_a))
+        await _attempt("DELETE", client.delete(box_b), must_succeed=True)
+        await _attempt("DELETE", client.delete(box_a), must_succeed=True)
 
-        await _attempt("LOGOUT", client.logout())
+        await _attempt("LOGOUT", client.logout(), must_succeed=True, ok_types={"BYE"})
     finally:
         await client.aclose()
 
@@ -202,6 +218,7 @@ async def test_fastmail_attempt_all_commands_live():
         attempted.add("AUTHENTICATE")
         try:
             await auth_client.authenticate("PLAIN", lambda _r: f"\0{user}\0{password}".encode())
+            succeeded.add("AUTHENTICATE")
         except (IMAP4.error, IMAP4.abort, OSError):
             pass
     finally:
@@ -214,6 +231,7 @@ async def test_fastmail_attempt_all_commands_live():
         attempted.add("STARTTLS")
         try:
             await starttls_client.starttls()
+            succeeded.add("STARTTLS")
         except (IMAP4.error, IMAP4.abort, OSError):
             pass
     except (IMAP4.error, IMAP4.abort, OSError):
@@ -221,5 +239,9 @@ async def test_fastmail_attempt_all_commands_live():
     finally:
         await starttls_client.aclose()
 
+    # Every command in the table must have been attempted.
     missing = set(EXPECTED_COMMANDS) - attempted
     assert not missing, f"Commands not attempted on live server: {sorted(missing)}"
+
+    # Core commands that should have succeeded must not have failed.
+    assert not failed, f"Core commands failed on live server: {failed}"

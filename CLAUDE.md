@@ -49,8 +49,11 @@ Unlike stdlib which connects in `__init__`, the async version defers TCP/TLS han
 - `self.capabilities` is empty until after `connect()`
 - Any method that checks capabilities before calling `_simple_command` must call `await self.connect()` first (see `enable()`, `starttls()`)
 
-### Shared State: `self.literal`
-Instance variable used to pass literal data (bytes or callable) from command methods to `_command()`. This creates ordering hazards with lazy connection because `connect()` internally calls `capability()` which goes through `_simple_command()` → `_command()` and would consume the literal. Fix: `_simple_command()` saves/restores `self.literal` around the `connect()` call.
+### Literal Passing via `_literal` Keyword
+Command methods that need to send literal data (APPEND, AUTHENTICATE) pass it to `_simple_command()` via a `_literal=` keyword argument. Inside `_simple_command`, the literal is assigned to `self.literal` only after acquiring `_command_lock`, ensuring concurrent commands cannot corrupt each other's payloads. The `_command()` method then reads and clears `self.literal` to send the data on the wire.
+
+### Timeout Behavior
+The `timeout` constructor parameter applies to both connection establishment and all subsequent I/O operations (reads and writes), matching upstream where `socket.settimeout()` persists for the socket's lifetime. The `_UNSET` sentinel distinguishes "no timeout argument" (fall back to `self.timeout`) from an explicit `None` (no timeout).
 
 ### Locking
 - **`_command_lock`** (`asyncio.Lock`): Serializes command execution. Acquired in `_simple_command()` around `_command()` + `_command_complete()`.
@@ -69,7 +72,8 @@ In `_command()`, if `self.literal` is `callable()`, it's treated as a "literator
 3. `aclose()` for cleanup (closes StreamWriter)
 4. `Idler` → `AsyncIdler` with `async for` iteration
 5. Constructor does not connect; connection is lazy
-6. `_simple_command` saves/restores `self.literal` around `connect()` to prevent inner commands from consuming it
+6. Literal data passed via `_literal=` keyword to `_simple_command`, assigned inside lock (not via shared state before call)
+7. Timeout applied to all I/O via `asyncio.wait_for` (upstream uses persistent `socket.settimeout`)
 
 ## Tests
 
@@ -107,13 +111,15 @@ AIOIMAPLIB_FASTMAIL_IMAP_PORT=993                  # optional, this is the defau
 
 1. **Capability checks before connection**: Any method that reads `self.capabilities` before its `_simple_command` call must `await self.connect()` first. Currently `enable()` and `starttls()` do this.
 
-2. **`self.literal` consumed by inner commands**: If a command sets `self.literal` and then triggers a lazy `connect()`, the inner `CAPABILITY` command will consume the literal. The save/restore in `_simple_command()` prevents this.
+2. **Literal concurrency**: Literal data must be passed via `_literal=` keyword to `_simple_command` and assigned inside the lock. Never set `self.literal` outside the lock -- concurrent tasks would corrupt each other's payloads.
 
 3. **`callable()` not `type()` for literator detection**: In async, `self._command` is a coroutine function while `_Authenticator.process` is a regular bound method. `type(literal) is type(self._command)` always returns False. Use `callable(literal)`.
 
-4. **Lock ordering**: `connect()` must be called **before** acquiring `_command_lock` in `_simple_command()`, otherwise `_get_capabilities()` → `capability()` → `_simple_command()` would deadlock.
+4. **IDLE duration requires a socket**: `AsyncIdler.__init__` rejects `duration` when `socket()` is None (covers both pre-connect and `IMAP4_stream` which has no socket). This matches upstream `Idler.__init__`.
 
-5. **AsyncIdler OSError suppression**: When `__aexit__` has an active exception (`exc_type` is set), OSError from sending DONE or completing the tagged response is suppressed (matching upstream `Idler.__exit__` behavior).
+5. **Lock ordering**: `connect()` must be called **before** acquiring `_command_lock` in `_simple_command()`, otherwise `_get_capabilities()` → `capability()` → `_simple_command()` would deadlock.
+
+6. **AsyncIdler OSError suppression**: When `__aexit__` has an active exception (`exc_type` is set), OSError from sending DONE or completing the tagged response is suppressed (matching upstream `Idler.__exit__` behavior).
 
 ## Future Work
 
