@@ -986,7 +986,10 @@ class IMAP4:
         await self.connect()
         async with self._command_lock:
             self.literal = _literal
-            return await self._command_complete(name, await self._command(name, *args))
+            try:
+                return await self._command_complete(name, await self._command(name, *args))
+            finally:
+                self.literal = None
 
     def _untagged_response(self, typ, dat, name):
         if typ == "NO":

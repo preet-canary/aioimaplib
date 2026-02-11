@@ -152,8 +152,8 @@ IMAP4.error             -- command-level errors
 python -m pytest tests/ -v
 ```
 
-This runs **241 tests** using built-in TCP test servers (no external services needed):
-- 25 behavior tests (auth, IDLE, enable, error handling, concurrency, etc.)
+This runs **242 tests** using built-in TCP test servers (no external services needed):
+- 26 behavior tests (auth, IDLE, enable, error handling, concurrency, etc.)
 - 216 command-state matrix tests (every command x every protocol state)
 
 ### Run with live Fastmail tests
@@ -174,7 +174,7 @@ python -m pytest tests/ -v
 
 This adds 2 live integration tests that exercise login/select/logout and all 43 commands against a real Fastmail server.
 
-**Full result: 243 passed.**
+**Full result: 244 passed.**
 
 ## Project Structure
 
@@ -184,7 +184,7 @@ aioimaplib/
     __init__.py          # Public exports
     client.py            # Core implementation (~1150 lines)
   tests/
-    conftest.py          # Async test runner hook (no pytest-asyncio needed)
+    conftest.py          # pytest-asyncio config + sys.path setup
     test_aioimaplib.py   # 25 behavior tests
     test_imap_commands_matrix.py  # 216 state matrix + live sweep
     test_fastmail_live.py         # Live Fastmail smoke test
@@ -195,8 +195,7 @@ aioimaplib/
     test_imaplib.py      # Upstream test reference
     README.md            # Upstream commit SHA
   pyproject.toml
-  IMPLEMENTATION_PLAN.md
-  PROGRESS.md
+  CLAUDE.md
 ```
 
 ## Design Decisions

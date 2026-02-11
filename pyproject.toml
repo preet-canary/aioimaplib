@@ -33,12 +33,10 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.pytest.ini_options]
-minversion = "7.0"
+minversion = "8.2"
 addopts = "-ra"
 testpaths = ["tests"]
-markers = [
-  "asyncio: mark test as asyncio-driven",
-]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["aioimaplib"]

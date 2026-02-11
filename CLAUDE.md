@@ -7,10 +7,10 @@
 ## Quick Reference
 
 ```bash
-# Run all local tests (241 tests, no credentials needed)
+# Run all local tests (242 tests, no credentials needed)
 python -m pytest tests/ -v
 
-# Run with live Fastmail integration tests (243 tests)
+# Run with live Fastmail integration tests (244 tests)
 set -a && source .env && set +a && python -m pytest tests/ -v
 ```
 
@@ -23,8 +23,7 @@ src/aioimaplib/
                            #   IMAP4_stream, AsyncIdler, _Authenticator, all 43 commands
 
 tests/
-  conftest.py              # Custom pytest hook -- runs async tests via asyncio.run()
-                           #   (no pytest-asyncio dependency)
+  conftest.py              # pytest-asyncio config + sys.path setup
   test_aioimaplib.py       # 25 behavior tests (auth, IDLE, enable, errors, concurrency)
   test_imap_commands_matrix.py  # 216 state matrix tests + live Fastmail command sweep
   test_fastmail_live.py    # Live Fastmail login/select/logout smoke test
@@ -90,7 +89,7 @@ set -a && source .env && set +a && python -m pytest tests/ -v
 ```
 
 ### Test Infrastructure
-- **No pytest-asyncio**: Tests use a custom `conftest.py` hook that detects coroutine functions and runs them with `asyncio.run()`.
+- **pytest-asyncio**: Async test functions are collected and executed automatically via `asyncio_mode = "auto"` (configured in `pyproject.toml`). No per-test `@pytest.mark.asyncio` marker is needed.
 - **Thread-based test servers**: `tests/helpers/imap_server.py` provides 12 handler variants (SimpleIMAPHandler, AuthHandlerCRAMMD5, IdleCmdHandler, etc.) that run in background threads. Tests spin up a server, get a port, and connect the async client to localhost.
 - **State matrix tests**: `test_imap_commands_matrix.py` parametrizes all 43 commands × 5 states (NONAUTH, AUTH, SELECTED, LOGOUT, IDLING) = 216 tests, verifying each command is allowed/rejected in the correct states.
 
@@ -104,8 +103,8 @@ AIOIMAPLIB_FASTMAIL_IMAP_PORT=993                  # optional, this is the defau
 ```
 
 ### Current Test Results
-- **243 passed**, 0 skipped (with credentials), 2 warnings (expected `__version__` deprecation)
-- 25 behavior tests + 216 state matrix tests + 1 command table completeness test + 1 live Fastmail sweep
+- **244 passed**, 0 skipped (with credentials), 2 warnings (expected `__version__` deprecation)
+- 26 behavior tests + 216 state matrix tests + 1 command table completeness test + 1 live Fastmail sweep
 
 ## Common Pitfalls
 

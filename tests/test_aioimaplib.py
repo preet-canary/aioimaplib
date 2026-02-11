@@ -201,6 +201,22 @@ async def test_control_characters_not_allowed_in_commands():
                 await client.list("\x00", "*")
 
 
+async def test_literal_not_leaked_after_command_error():
+    """A literal set before _command() raises must not leak to the next command."""
+    with run_server(SimpleIMAPHandler) as server:
+        async with open_client(*server.server_address) as client:
+            await client.login("user", "pass")
+            await client.select("INBOX")
+            # append sets a literal, but the control-char mailbox name
+            # causes ValueError inside _command() before the literal is consumed.
+            with pytest.raises(ValueError, match="Control characters not allowed"):
+                await client.append("\x00bad", None, None, b"LIT")
+            # self.literal must be None now; noop must succeed cleanly.
+            assert client.literal is None
+            typ, _ = await client.noop()
+            assert typ == "OK"
+
+
 async def test_connect_failure_refused_port():
     port = get_unused_port()
     client = IMAP4("127.0.0.1", port)
