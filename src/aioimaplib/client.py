@@ -262,7 +262,7 @@ class IMAP4:
     class _responsetimeout(TimeoutError):
         pass
 
-    def __init__(self, host: str = "", port: int = IMAP4_PORT, timeout: float | None = None):
+    def __init__(self, host: str = "", port: int = IMAP4_PORT, timeout: float | None = None, sock=None):
         self.debug = Debug
         self.state = "LOGOUT"
         self.literal = None
@@ -279,6 +279,7 @@ class IMAP4:
         self._readbuf = bytearray()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
+        self._injected_sock = sock
         self._proc: asyncio.subprocess.Process | None = None
         self._proc_reader: asyncio.StreamReader | None = None
         self._proc_writer: asyncio.StreamWriter | None = None
@@ -355,12 +356,20 @@ class IMAP4:
         self.port = port
         self.timeout = timeout
 
-        connect_host = host or "localhost"
-        opener = asyncio.open_connection(connect_host, port)
-        if timeout is None:
-            self._reader, self._writer = await opener
+        if self._injected_sock is not None:
+            opener = asyncio.open_connection(sock=self._injected_sock)
+            self._injected_sock = None
+            if timeout is None:
+                self._reader, self._writer = await opener
+            else:
+                self._reader, self._writer = await asyncio.wait_for(opener, timeout)
         else:
-            self._reader, self._writer = await asyncio.wait_for(opener, timeout)
+            connect_host = host or "localhost"
+            opener = asyncio.open_connection(connect_host, port)
+            if timeout is None:
+                self._reader, self._writer = await opener
+            else:
+                self._reader, self._writer = await asyncio.wait_for(opener, timeout)
 
         self._readbuf = bytearray()
         self._is_stream = False
@@ -1025,8 +1034,8 @@ class IMAP4:
 if HAVE_SSL:
 
     class IMAP4_SSL(IMAP4):
-        def __init__(self, host: str = "", port: int = IMAP4_SSL_PORT, *, ssl_context=None, timeout=None):
-            super().__init__(host=host, port=port, timeout=timeout)
+        def __init__(self, host: str = "", port: int = IMAP4_SSL_PORT, *, ssl_context=None, timeout=None, sock=None):
+            super().__init__(host=host, port=port, timeout=timeout, sock=sock)
             if ssl_context is None:
                 ssl_context = ssl._create_stdlib_context() if hasattr(ssl, "_create_stdlib_context") else ssl.create_default_context()
             self.ssl_context = ssl_context
@@ -1037,8 +1046,12 @@ if HAVE_SSL:
             self.host = host
             self.port = port
             self.timeout = timeout
-            connect_host = host or "localhost"
-            opener = asyncio.open_connection(connect_host, port, ssl=self.ssl_context, server_hostname=self.host or None)
+            if self._injected_sock is not None:
+                opener = asyncio.open_connection(sock=self._injected_sock, ssl=self.ssl_context, server_hostname=self.host or None)
+                self._injected_sock = None
+            else:
+                connect_host = host or "localhost"
+                opener = asyncio.open_connection(connect_host, port, ssl=self.ssl_context, server_hostname=self.host or None)
             if timeout is None:
                 self._reader, self._writer = await opener
             else:
